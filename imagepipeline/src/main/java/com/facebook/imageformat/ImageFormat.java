@@ -19,6 +19,13 @@ public enum ImageFormat {
   WEBP_EXTENDED,
   WEBP_EXTENDED_WITH_ALPHA,
   WEBP_ANIMATED,
+
+  BPG_SIMPLE,
+  BPG_LOSSLESS,
+  BPG_EXTENDED,
+  BPG_EXTENDED_WITH_ALPHA,
+  BPG_ANIMATED,
+
   JPEG,
   PNG,
   GIF,
@@ -34,5 +41,13 @@ public enum ImageFormat {
         imageFormat == WEBP_EXTENDED ||
         imageFormat == WEBP_EXTENDED_WITH_ALPHA ||
         imageFormat == WEBP_ANIMATED;
+  }
+
+  public static boolean isBpgFormat(ImageFormat imageFormat) {
+      return imageFormat == BPG_SIMPLE ||
+              imageFormat == BPG_LOSSLESS ||
+              imageFormat == BPG_EXTENDED ||
+              imageFormat == BPG_EXTENDED_WITH_ALPHA ||
+              imageFormat == BPG_ANIMATED;
   }
 }

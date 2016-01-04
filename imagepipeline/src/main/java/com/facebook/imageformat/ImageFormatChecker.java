@@ -9,17 +9,19 @@
 
 package com.facebook.imageformat;
 
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.UnsupportedEncodingException;
-
 import com.facebook.common.internal.ByteStreams;
 import com.facebook.common.internal.Closeables;
 import com.facebook.common.internal.Ints;
 import com.facebook.common.internal.Preconditions;
 import com.facebook.common.internal.Throwables;
+import com.facebook.imagepipeline.bpg.BpgHeaderInfo;
 import com.facebook.imagepipeline.webp.WebpSupportStatus;
+import com.facebook.imageutils.BytesPatternMatcher;
+
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UnsupportedEncodingException;
 
 /**
  * Detects the format of an encoded image.
@@ -42,6 +44,10 @@ public class ImageFormatChecker {
 
     if (WebpSupportStatus.isWebpHeader(imageHeaderBytes, 0, headerSize)) {
       return getWebpFormat(imageHeaderBytes, headerSize);
+    }
+
+    if (BpgHeaderInfo.isBpgHeader(imageHeaderBytes)) {
+      return getBpgFormat(imageHeaderBytes);
     }
 
     if (isJpegHeader(imageHeaderBytes, headerSize)) {
@@ -112,6 +118,23 @@ public class ImageFormatChecker {
     return doGetImageFormat(imageHeaderBytes, headerSize);
   }
 
+  /**
+   * Tries to read up to MAX_HEADER_LENGTH bytes from InputStream is and use read bytes to
+   * determine type of the image contained in is. If provided input stream does not support mark,
+   * then this method consumes data from is and it is not safe to read further bytes from is after
+   * this method returns. Otherwise, if mark is supported, it will be used to preserve oryginal
+   * content of is.
+   * @param is
+   * @return ImageFormat matching content of is InputStream or UNKNOWN if no type is suitable
+   * @throws IOException if exception happens during read
+   */
+  public static ImageFormat getImageFormat(byte[] imageHeaderBytes, final InputStream is) throws IOException {
+    Preconditions.checkNotNull(is);
+    final int headerSize = readHeaderFromStream(is, imageHeaderBytes);
+    return doGetImageFormat(imageHeaderBytes, headerSize);
+  }
+
+
   /*
    * A variant of getImageFormat that wraps IOException with RuntimeException.
    * This relieves clients of implementing dummy rethrow try-catch block.
@@ -119,6 +142,18 @@ public class ImageFormatChecker {
   public static ImageFormat getImageFormat_WrapIOException(final InputStream is) {
     try {
       return getImageFormat(is);
+    } catch (IOException ioe) {
+      throw Throwables.propagate(ioe);
+    }
+  }
+
+  /*
+   * A variant of getImageFormat that wraps IOException with RuntimeException.
+   * This relieves clients of implementing dummy rethrow try-catch block.
+   */
+  public static ImageFormat getImageFormat_WrapIOException(final byte[] imageHeaderBytes, final InputStream is) {
+    try {
+      return getImageFormat(imageHeaderBytes, is);
     } catch (IOException ioe) {
       throw Throwables.propagate(ioe);
     }
@@ -144,34 +179,6 @@ public class ImageFormatChecker {
   }
 
   /**
-   * Checks if byteArray interpreted as sequence of bytes has a subsequence equal to pattern
-   * starting at position equal to offset.
-   * @param byteArray
-   * @param offset
-   * @param pattern
-   * @return true if match succeeds, false otherwise
-   */
-  private static boolean matchBytePattern(
-      final byte[] byteArray,
-      final int offset,
-      final byte[] pattern) {
-    Preconditions.checkNotNull(byteArray);
-    Preconditions.checkNotNull(pattern);
-    Preconditions.checkArgument(offset >= 0);
-    if (pattern.length + offset > byteArray.length) {
-      return false;
-    }
-
-    for (int i = 0; i < pattern.length; ++i) {
-      if (byteArray[i + offset] != pattern[i]) {
-        return false;
-      }
-    }
-
-    return true;
-  }
-
-  /**
    * Helper method that transforms provided string into it's byte representation
    * using ASCII encoding
    * @param value
@@ -186,7 +193,6 @@ public class ImageFormatChecker {
       throw new RuntimeException("ASCII not found!", uee);
     }
   }
-
 
   /**
    * Each WebP header should cosist of at least 20 bytes and start
@@ -229,6 +235,41 @@ public class ImageFormatChecker {
   }
 
   /**
+   * Each BPG header should consist of at least 16 bytes and start
+   * with "BPGû" bytes.
+   * More detailed description if WebP can be found here:
+   * <a href="http://bellard.org/bpg/bpg_spec.txt">
+   *   http://bellard.org/bpg/bpg_spec.txt</a>
+   */
+  private static final int SIMPLE_BPG_HEADER_LENGTH = 16;
+  private static final int EXTENDED_BPG_HEADER_LENGTH = 40;
+
+
+  /**
+   * Determines type of BPG image. imageHeaderBytes has to be header of a BPG image
+   */
+  private static ImageFormat getBpgFormat(final byte[] imageHeaderBytes) {
+    Preconditions.checkArgument(BpgHeaderInfo.isBpgHeader(imageHeaderBytes));
+    if (BpgHeaderInfo.isSimpleBpgImage(imageHeaderBytes)) {
+      return ImageFormat.BPG_SIMPLE;
+    }
+
+    if (BpgHeaderInfo.isExtendedBpgImage(imageHeaderBytes)) {
+      return ImageFormat.BPG_EXTENDED;
+    }
+
+    if (BpgHeaderInfo.isExtendedWithAlphaBpgImage(imageHeaderBytes)) {
+      return ImageFormat.BPG_EXTENDED_WITH_ALPHA;
+    }
+
+    if (BpgHeaderInfo.isAnimatedBpgImage(imageHeaderBytes)) {
+      return ImageFormat.BPG_ANIMATED;
+    }
+
+    return ImageFormat.UNKNOWN;
+  }
+
+  /**
    * Every JPEG image should start with SOI mark (0xFF, 0xD8) followed by beginning
    * of another segment (0xFF)
    */
@@ -246,7 +287,7 @@ public class ImageFormatChecker {
    * @return true if imageHeaderBytes starts with SOI_BYTES and headerSize >= 3
    */
   private static boolean isJpegHeader(final byte[] imageHeaderBytes, final int headerSize) {
-    return headerSize >= JPEG_HEADER.length && matchBytePattern(imageHeaderBytes, 0, JPEG_HEADER);
+    return headerSize >= JPEG_HEADER.length && BytesPatternMatcher.matchBytePattern(imageHeaderBytes, 0, JPEG_HEADER);
   }
 
 
@@ -269,7 +310,7 @@ public class ImageFormatChecker {
    * @return true if imageHeaderBytes starts with PNG_HEADER
    */
   private static boolean isPngHeader(final byte[] imageHeaderBytes, final int headerSize) {
-    return headerSize >= PNG_HEADER.length && matchBytePattern(imageHeaderBytes, 0, PNG_HEADER);
+    return headerSize >= PNG_HEADER.length && BytesPatternMatcher.matchBytePattern(imageHeaderBytes, 0, PNG_HEADER);
   }
 
 
@@ -293,8 +334,8 @@ public class ImageFormatChecker {
     if (headerSize < GIF_HEADER_LENGTH) {
       return false;
     }
-    return matchBytePattern(imageHeaderBytes, 0, GIF_HEADER_87A) ||
-        matchBytePattern(imageHeaderBytes, 0, GIF_HEADER_89A);
+    return BytesPatternMatcher.matchBytePattern(imageHeaderBytes, 0, GIF_HEADER_87A) ||
+        BytesPatternMatcher.matchBytePattern(imageHeaderBytes, 0, GIF_HEADER_89A);
   }
 
   /**
@@ -314,9 +355,8 @@ public class ImageFormatChecker {
     if (headerSize < BMP_HEADER.length) {
       return false;
     }
-    return matchBytePattern(imageHeaderBytes, 0, BMP_HEADER);
+    return BytesPatternMatcher.matchBytePattern(imageHeaderBytes, 0, BMP_HEADER);
   }
-
 
   /**
    * Maximum header size for any image type.
@@ -328,6 +368,8 @@ public class ImageFormatChecker {
   private static final int MAX_HEADER_LENGTH = Ints.max(
       EXTENDED_WEBP_HEADER_LENGTH,
       SIMPLE_WEBP_HEADER_LENGTH,
+      SIMPLE_BPG_HEADER_LENGTH,
+      EXTENDED_BPG_HEADER_LENGTH,
       JPEG_HEADER.length,
       PNG_HEADER.length,
       GIF_HEADER_LENGTH,
